@@ -1,0 +1,87 @@
+char rx1_byte = 3;
+void Set_Alarm1_Opts(int A1_Bin, int params[]) {
+  //if(A1_Bin ==1 && rx1_byte <= 0){
+  //Serial.println("Which alarm options would you like? Pick a number");
+  //for(int j = 0; j<4;j++){
+  //  Serial.println(Alarm1_Opts[j]);
+  //  delay(500);
+ // }
+  //}
+ // while (!Serial.available()){
+ // }
+  //if (Serial.available() > 0) {    // is a character available?
+   // rx1_byte = Serial.read();       // get the character
+   // Serial.println(rx1_byte);
+    // check if a number was received
+    if (rx1_byte == '1') {
+      params[0] = params[0]|0x80;
+      params[1] = params[1]|0x80;
+      params[2] = params[2]|0x80;
+      Serial.println("Alarm 1x per second set");
+    }
+    if(rx1_byte =='2'){
+      params[1] = params[1] | 0x80;
+      params[2] = params[2] | 0x80;
+      Serial.println("Alarm when seconds match set");
+    }
+    if(rx1_byte =='3'){
+      params[2] = params[2] | 0x80;
+      Serial.println("Alarm when minutes and seconds match set");
+    }
+    if(rx1_byte =='4'){
+      Serial.println("Alarm when hours, minutes and seconds match set");
+    //}
+     // Serial.print("Number received: ");
+   //  Serial.println(rx1_byte);
+    }//else {
+     // Serial.println("Invalid Choice, pick again");
+ // }
+    if(A1_Bin ==1 && rx1_byte > 0){
+      Serial.println("Alarm1 options chosen, continuing");
+    }
+  } // end: if (Serial.available() > 0)
+
+void flushReceive(){
+while(Serial.available())
+  Serial.read();
+}
+
+char rx2_byte = 2;
+void Set_Alarm2_Opts(int A2_Bin, int params[]) {
+  //if(A2_Bin ==1 && rx2_byte <= 0){
+  //Serial.println("Which alarm options would you like? Pick a number");
+ // for(int j = 0; j<3;j++){
+   // Serial.println(Alarm2_Opts[j]);
+  //  delay(500);
+//  }
+  //}
+ // while (!Serial.available()){
+ //}
+  //if (Serial.available() > 0) {    // is a character available?
+  //  rx2_byte = Serial.read();       // get the character
+   // Serial.println(rx2_byte);
+    // check if a number was received
+    if (rx2_byte == '1') {
+      params[4] = params[4]|0x80;
+      params[5] = params[5]|0x80;
+      Serial.println("Alarm 1x per min set");
+    }
+    if(rx2_byte =='2'){
+      params[5] = params[5] | 0x80;
+      Serial.println("Alarm when minutes match set");
+    }
+    if(rx2_byte =='3'){
+      Serial.println("Alarm when minutes and hours match set");
+   // }
+   //   Serial.print("Number received: ");
+   //   Serial.println(rx2_byte);
+   }
+   //else {
+   //   Serial.println("Invalid Choice, pick again");
+//  }
+    if(A2_Bin ==1 && rx2_byte > 0){
+      Serial.println("Alarm2 options chosen, continuing");
+    }
+  } // end: if (Serial.available() > 0)
+
+  
