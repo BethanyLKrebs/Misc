@@ -1,0 +1,459 @@
+//For use with Arduino MEGA
+
+//January 6 2017 - Need to add clock code in here in main loop - after mode is set ask for user input for timers or random
+//Might be able to redo into state machine? Double check on that
+
+//January 18th 2017 - Added case switch for user input to change alarm set mask bits in alarm setting functions.  Need to figure out function for random alarm setting 
+//between 0 and 480 minutes.  Current generates 4 or 6 random times between 0 and 480 minutes, need to break that into hours/mins and then to DectoBCD for writing alarm values
+
+
+#include <LiquidCrystal.h>
+#include <Key.h>
+#include <Keypad.h>
+#include "Wire.h"
+#define DS3231_I2C_ADDRESS 0x68
+#include <avr/sleep.h>
+#include <avr/power.h>
+#include <avr/wdt.h>
+
+// Convert normal decimal numbers to binary coded decimal
+byte decToBcd(byte val)
+{
+  return( (val/10*16) + (val%10) );
+}
+// Convert binary coded decimal to normal decimal numbers
+byte bcdToDec(byte val)
+{
+  return( (val/16*10) + (val%16) );
+}
+
+//ALARM CODE
+int wakePin = 2; // pin used for waking up
+byte alarm_time ;
+byte bin_alarm_time;
+boolean alarm_fired=0;
+//RANDOMIZING CODE
+int Random_list [6];
+int start_hr = 0;
+int start_min = 0;
+
+//ALARM MASK BIT SETTING
+byte A1M1_mask = 00000000;
+byte A1M2_mask = 00000000;
+byte A1M3_mask = 0x80;
+byte A1M4_mask = 0x80;
+
+byte A2M2_mask = 0x80;
+byte A2M3_mask = 0x80;
+byte A2M4_mask = 0x80;
+
+void setDS3231time(byte second, byte minute, byte hour, byte dayOfWeek, byte dayOfMonth, byte month, byte year){
+  // sets time and date data to DS3231
+  Wire.beginTransmission(DS3231_I2C_ADDRESS);
+  Wire.write(0); // set next input to start at the seconds register
+  Wire.write(decToBcd(second)); // set seconds
+  Wire.write(decToBcd(minute)); // set minutes
+  Wire.write(decToBcd(hour)); // set hours
+  Wire.write(decToBcd(dayOfWeek)); // set day of week (1=Sunday, 7=Saturday)
+  Wire.write(decToBcd(dayOfMonth)); // set date (1 to 31)
+  Wire.write(decToBcd(month)); // set month
+  Wire.write(decToBcd(year)); // set year (0 to 99)
+  Wire.endTransmission();
+}
+
+void readDS3231time(byte *second,byte *minute,byte *hour,byte *dayOfWeek,byte *dayOfMonth,byte *month,byte *year)
+{  Wire.beginTransmission(DS3231_I2C_ADDRESS);
+  Wire.write(0); // set DS3231 register pointer to 00h
+  Wire.endTransmission();
+  Wire.requestFrom(DS3231_I2C_ADDRESS, 7);
+  // request seven bytes of data from DS3231 starting from register 00h
+  *second = bcdToDec(Wire.read() & 0x7f);
+  *minute = bcdToDec(Wire.read());
+  *hour = bcdToDec(Wire.read() & 0x3f);
+  *dayOfWeek = bcdToDec(Wire.read());
+  *dayOfMonth = bcdToDec(Wire.read());
+  *month = bcdToDec(Wire.read());
+  *year = bcdToDec(Wire.read());
+}
+
+void Alarm_Fired(){
+  alarm_fired=1;
+}
+
+void SetAlarm1(byte input_minutes, byte input_hours){
+  Wire.beginTransmission(DS3231_I2C_ADDRESS);
+  Wire.write(7); //Open Alarm 1 seconds register
+                    //                  Bit 7     Bit 6     Bit 5     Bit 4     Bit 3     Bit 2     Bit 1     Bit 0
+                  // Address 0x7  A1M1 Mask Bit   10 Sec    10 Sec    10 Sec    1 Sec     1 Sec     1 Sec     1 Sec
+                  // Address 0x8  A1M2 Mask Bit   10 Min    10 Min    10 Min    1 Min     1 Min     1 Min     1 Min
+                  // Address 0X9  A1M3 Mask Bit   12/24    AM/PM or10Hr* 10 Hr  1 Hours  1 Hours  1 Hours  1 Hours  (*Depends on Bit 6 value)
+                  // Address 0xA  A1M4 Mask Bit   DY/DT   10 Date     10 Date   Day/Date*  Day/Date*  Day/Date*  Day/Date*  (*Depends on Bit 6 value)
+                  
+                  //Mask Bits Alarm 1                       DY/DT      A1M4      A1M3      A1M2      A1M1
+                  //Alarm Once per second                     X          1         1         1         1
+                  //Alarm when seconds match                  X          1         1         1         0
+                  //Alarm when minutes & secs match           X          1         1         0         0   
+                  //Alarm when hrs/minutes/secs match         X          1         0         0         0
+                  //Alrm when date/hours/mins/secs match      0          0         0         0         0   
+                  //Alarm when days/hours/mins/secs match     1          0         0         0         0    
+  
+  byte alarm1_secs = A1M1_mask;
+  Serial.print("Alarm 1 seconds set:");
+  Serial.println(alarm1_secs,BIN);               
+  Wire.write(alarm1_secs); //Write 0x80 to A1M1
+  byte alarm1_mins = decToBcd(input_minutes);
+  alarm1_mins = alarm1_mins | A1M2_mask;
+  Wire.write(alarm1_mins); //Write 0x80 to A1M2
+  byte alarm1_hours = decToBcd(input_hours);
+  alarm1_hours = alarm1_hours | A1M3_mask;
+  Wire.write(alarm1_hours); //Write 0x80 to A1M3 When bit 6 is 0, bits 4 and 5 are the 10 hour bits (4 = 1, 5 =2).  When bit 6 is 1, bit 5 is the AM/PM with 1 = PM
+  Wire.write(A1M4_mask); //Write 0x80 to A1M4 DY/DT which indicates day of week (DY/DT = 0) or date of month (DY/DT = 1)
+  Wire.endTransmission();
+  
+  Wire.beginTransmission(DS3231_I2C_ADDRESS);
+  Wire.write(0xE); //Open control register
+  Wire.requestFrom(DS3231_I2C_ADDRESS, 1);
+  byte ctrl = Wire.read(); //Read current settings of control register into ctrl variable
+  Wire.endTransmission();
+  
+  Serial.print("ctrl read:"); //Print 
+  Serial.print(ctrl,HEX); //Print ctrl value in HEX
+  ctrl = (ctrl & ~0x07 ) | 0x45; // Bitwise evaluate ctrl value and not 111 (clear INTCN, A2IE, A1IE)
+                                 // Bitwise OR in 01000101 (BBSQW = 1, whatever default settings on bits 3-5 are, INTCN =1, A2IE = 0, A1IE =1).
+                                //BBSQW =1 enables battery power interrupt, INTCN needs to be set to 1 to enable alarm interrupt, A2IE and A1IE enable interrupt for alarms 2 & 1 respectively
+  Wire.beginTransmission(DS3231_I2C_ADDRESS);
+  Wire.write(0x0E); //Open control register
+  Wire.write(ctrl); //Write ctrl value to control register
+  Wire.endTransmission();
+
+  Wire.beginTransmission(DS3231_I2C_ADDRESS);
+  Wire.write(0xF); //Open status resgister
+  Wire.requestFrom(DS3231_I2C_ADDRESS, 1); //Request 1 byte from status register
+  byte stat = Wire.read(); // Read current status settings from register to stat variable
+  Wire.endTransmission();
+  Serial.print("stat read:");
+  Serial.print(stat,HEX); //Print stat variable in HEX
+  
+  stat &= ~1; //stat value and not 1, Bit 0 is A1F (Alarm 1 Flag) which can only be set low
+  Wire.beginTransmission(DS3231_I2C_ADDRESS);
+  Wire.write(0x0F); //Open status register
+  Wire.write(stat); //Write stat value to status register
+  Wire.endTransmission();
+}
+
+
+void SetAlarm2(byte input_minutes, byte input_hours){
+  //Set up to alarm when minutes match (on the hour), working 6/2/16 
+  Wire.beginTransmission(DS3231_I2C_ADDRESS);
+  Wire.write(0xB); // Set Registry address to B
+                   //                    Bit 7     Bit 6     Bit 5     Bit 4     Bit 3     Bit 2     Bit 1     Bit 0
+                  // Address 0xB  A2M2 Mask Bit   10 Min    10 Min    10 Min    1 Min     1 Min     1 Min     1 Min
+                  // Address 0xC  A2M3 Mask Bit   12/24    AM/PM or10Hr* 10 Hr   1 Hours   1 Hours   1 Hours   1 Hours  (*Depends on Bit 6 value)
+                  // Address 0XD  A2M4 Mask Bit   DY/DT   10 Date     10 Date   Day/Date*  Day/Date*  Day/Date*  Day/Date*  (*Depends on Bit 6 value)
+
+                  //Mask Bits Alarm 2           DY/DT       A2M4        A2M3      A2M2
+                  //Alarm once per min            X         1           1         1
+                  //Alarm when mins match         X         1           1         0
+                  //Alarm when hours/mins match   X         1           0         0
+                  //Alarm when dates/hrs/mins     0         0           0         0
+                  //Alarm when day/hrs/mins       1         0           0         0
+  byte alarm2_mins = A2M2_mask | input_minutes;                 
+  Wire.write(alarm2_mins); // Write minutes alarm to A2M2
+  Serial.println("Alarm 2 minutes set");
+  Serial.println(alarm2_mins,BIN);
+  byte alarm2_hours = A2M3_mask | input_hours;
+  Wire.write(alarm2_hours); // Write A2M3 alarm registry (0x80 writes bit 8 to 1 for the mask bit to set the alarm and sets bit 6 (12/24) to 0 for 24 hour time.
+                    // When bit 6 is 0, bits 4 and 5 are the 10 hour bits (4 = 1, 5 =2).  When bit 6 is 1, bit 5 is the AM/PM with 1 = PM
+  Wire.write(A2M4_mask); // Write A2M4 alarm registry (0xC0 writes in mask bit and DY/DT which indicates day of week (DY/DT = 0) or date of month (DY/DT = 1)
+  Wire.endTransmission();
+  
+  Wire.beginTransmission(DS3231_I2C_ADDRESS);
+  Wire.write(0xE); //Sets Registry to control register (0xE)
+  Wire.requestFrom(DS3231_I2C_ADDRESS, 1);
+  byte ctrl = Wire.read(); //Reads current settings of control registry in variable 'ctrl'
+  Wire.endTransmission();
+  
+  Serial.print("ctrl read:");
+  Serial.print(ctrl,HEX);
+  ctrl = (ctrl & ~0x07 ) | 0x46; // Bitwise evaluate ctrl value and not 111 (clear INTCN, A2IE, A1IE)
+                                 // Bitwise OR in 01000110 (BBSQW = 1, whatever default settings on bits 3-5 are, INTCN =1, A2IE = 0, A1IE =1).
+                                //BBSQW =1 enables battery power interrupt, INTCN needs to be set to 1 to enable alarm interrupt, A2IE and A1IE enable interrupt for alarms 2 & 1 respectively
+  Wire.beginTransmission(DS3231_I2C_ADDRESS);
+  Wire.write(0x0E); //Begins transmission to control register
+  Wire.write(ctrl); //Writes ctrl variable to control register
+  Wire.endTransmission();
+  Serial.println("Ctrl written:");
+  Serial.println(ctrl,BIN);
+
+  Wire.beginTransmission(DS3231_I2C_ADDRESS);
+  Wire.write(0xF); //Begins transmission to status register
+  Wire.requestFrom(DS3231_I2C_ADDRESS, 1); //Request 1 byte from device at address
+  byte stat = Wire.read(); //Read status register into stat variable
+  Wire.endTransmission();
+  Serial.print("stat read:");
+  Serial.print(stat,HEX);
+  
+  stat &= ~0x3; //Clear last two bits, A2F(bit 1) and A1F (bit 0), which are the alarm flag bits for alarms 2 and 1 respectively
+  Wire.beginTransmission(DS3231_I2C_ADDRESS);
+  Wire.write(0x0F); //Begin transmission to status register
+  Wire.write(stat); //Write variable stat to status register
+  Wire.endTransmission();
+  
+}
+//SCREEN SET UP
+LiquidCrystal lcd(34, 36, 38, 40, 42, 44,46,48,50,52);
+
+//KEYBOARD SET UP
+const byte numRows= 4; //number of rows on the keypad
+const byte numCols= 4; //number of columns on the keypad
+
+//keymap defines the key pressed according to the row and columns just as appears on the keypad
+char keymap[numRows][numCols]= 
+{
+{'1', '2', '3', 'A'}, 
+{'4', '5', '6', 'B'}, 
+{'7', '8', '9', 'C'},
+{'*', '0', '#', 'D'}
+};
+
+//Code that shows the the keypad connections to the arduino terminals
+byte rowPins[numRows] = {39,41,43,45}; //Rows 0 to 3
+byte colPins[numCols]= {47,49,51,53}; //Columns 0 to 3
+Keypad myKeypad= Keypad(makeKeymap(keymap), rowPins, colPins, numRows, numCols);
+
+//MODE AND ALARM VARIABLES 
+bool mode_set = false;
+int mode = 0;
+bool alarm_1_set = false;
+bool alarm_2_set = false;
+
+boolean test_key_entered = false;
+char set_key = '2';
+char test_key = '0';
+
+//SET UP LOOP
+void setup() {
+  // set up the LCD's number of columns and rows:
+  setDS3231time(0,0,0,1,1,1,17);
+  lcd.begin(16, 2);
+  pinMode(4,OUTPUT);
+  digitalWrite(4,LOW);
+  lcd.print("Timer Shower: 1");
+  lcd.setCursor(0,2);
+  lcd.print("Random Shower: 2");
+  lcd.clear();
+  lcd.print("Both: 3");
+  randomSeed(analogRead(A0)); //SELECT INITIAL RANDOM VALUE
+  //myKeypad.addEventListener(keypadEvent);
+  Serial.begin(9600);
+  if(mode_set == false){
+  char key = myKeypad.waitForKey();
+      if(key){
+          if(key=='1'){
+            mode = 1;
+            mode_set = true;
+            Serial.println("Mode set to timer");
+            lcd.clear();
+            lcd.print("Timer Mode");
+            return mode;
+          }
+          if(key=='2'){
+              mode = 2;
+              mode_set = true;
+              Serial.println("Mode set to random");
+              randomSeed(analogRead(A2));
+              int myInts[6];
+              for(int x=0;x <6; x++){
+                myInts[x] ==random(0,480);
+                Serial.println(myInts[x]);
+              }
+              lcd.clear();
+              lcd.print("Random Mode");
+              return mode;
+          }
+          if(key =='3'){
+              mode = 3;
+              mode_set = true;
+              Serial.println("Mode set to both");
+              lcd.clear();
+              lcd.print("Timed + Random");
+              return mode;
+          }else{
+              mode = 0;
+              Serial.println("Error mode not set");
+              lcd.clear();
+              lcd.print("Error Re-enter");
+              key = myKeypad.waitForKey();
+              if(key =='1'){
+                mode = 1;
+                mode_set =true;
+              }
+              if(key=='2'){
+                mode = 2;
+                mode_set =true;
+              }else{
+                mode = 3;
+        mode_set = true;
+              }
+              return mode;
+        }
+      }
+  }else{
+    Serial.println("Mode already set");
+}
+attachInterrupt(digitalPinToInterrupt(2),Alarm_Fired,CHANGE); //ATTACH INTERRUPT FOR ALARM HERE
+}
+
+//RUNNING LOOP
+void loop() {
+  Serial.println(mode);
+  Serial.println(mode_set);
+  if(mode_set == true){
+   switch(mode){ //Switch according to mode previously set, probably add a nested switch statement inside each mode too
+      case 1: //What to do if user selects timed shower option
+           if(test_key == '0'){
+                lcd.clear();
+                lcd.print("How many hours?");
+                test_key = myKeypad.waitForKey();
+                int interval_hours = 0;
+                switch(test_key){
+                    case '1':
+                        interval_hours = 1;
+                        break;
+                    case '2':
+                        interval_hours = 2;
+                        break;
+                    case '3':
+                        interval_hours =3;
+                        break;
+                    case '4':
+                        interval_hours =4;
+                        break;
+                    case '5':
+                        interval_hours = 5;
+                        break;
+                    case '6':
+                        interval_hours = 6;
+                        break;
+                    case '7':
+                        interval_hours = 7;
+                        break;
+                    case '8':
+                        interval_hours = 8;
+                        break;
+                    case '9':
+                        interval_hours = 9;
+                        break;
+                    case 'A':
+                        interval_hours = 1;
+                        break;
+                    case 'B':
+                        interval_hours = 1;
+                        break;
+                    case 'C':
+                        interval_hours = 1;
+                        break;
+                    case 'D':
+                        interval_hours = 1;
+                        break;
+                    case '#':
+                        interval_hours =1;
+                        break;
+                    case '*':
+                        interval_hours =1;
+                        break;
+                  return interval_hours;
+                  }
+                  lcd.clear();
+                  delay(250);
+                  lcd.print("Run every ");
+                  delay(250);
+                  lcd.print(interval_hours);
+                  delay(250);
+                  lcd.print(" hours");
+        }
+          if(test_key != '0'){
+              int interval_hours = 0;
+              switch(test_key){
+                    case '1':
+                        interval_hours = 1;
+                        break;
+                    case '2':
+                        interval_hours = 2;
+                        break;
+                    case '3':
+                        interval_hours =3;
+                        break;
+                    case '4':
+                        interval_hours =4;
+                        break;
+                    case '5':
+                        interval_hours = 5;
+                        break;
+                    case '6':
+                        interval_hours = 6;
+                        break;
+                    case '7':
+                        interval_hours = 7;
+                        break;
+                    case '8':
+                        interval_hours = 8;
+                        break;
+                    case '9':
+                        interval_hours = 9;
+                        break;
+                    case 'A':
+                        interval_hours = 1;
+                        break;
+                    case 'B':
+                        interval_hours = 1;
+                        break;
+                    case 'C':
+                        interval_hours = 1;
+                        break;
+                    case 'D':
+                        interval_hours = 1;
+                        break;
+                    case '#':
+                        interval_hours =1;
+                        break;
+                    case '*':
+                        interval_hours =1;
+                        break;
+                  return interval_hours;
+                  }
+            lcd.clear();
+            delay(250);
+            lcd.print("Run every ");
+            delay(250);
+            lcd.print(interval_hours);
+            delay(250);
+            lcd.print(" hours");
+          }
+      
+        A2M2_mask = 00000000;
+    //Contain all of the random generation stuff in the cases
+      
+      break;
+
+      case 2:
+        A2M2_mask = 00000000;
+        A2M3_mask = 00000000;
+
+      break;
+
+
+      case 3:
+        A1M1_mask = 00000000;
+        A1M2_mask = 00000000;
+        A2M4_mask = 00000000;
+        A2M3_mask = 00000000;
+      break;
+
+      default:
+      
+      break;
+    }
+  }
+delay(10000);
+}
